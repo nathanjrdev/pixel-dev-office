@@ -1,0 +1,11 @@
+{
+  "name": "escritorio-pixel",
+  "version": "1.0.0",
+  "description": "Seus agentes do Claude Code como bonequinhos num escritório em pixel art",
+  "scripts": {
+    "start": "node server.js",
+    "instalar": "node instalar.js",
+    "desinstalar": "node desinstalar.js",
+    "testar": "node testar.js"
+  }
+}
