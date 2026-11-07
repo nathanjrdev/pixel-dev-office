@@ -69,6 +69,7 @@ button{font:inherit;color:inherit}
 .novo{background:var(--deep);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:8px;box-shadow:inset 0 0 0 1px var(--line)}
 .novo label{font-size:12px;color:var(--muted)}
 .novo input{background:var(--panel);border:1px solid var(--line);border-radius:8px;color:var(--ink);padding:8px 10px;font:inherit;font-size:14px;min-width:0}
+.novo textarea{background:var(--panel);border:1px solid var(--line);border-radius:8px;color:var(--ink);padding:8px 10px;font:inherit;font-size:14px;min-width:0;resize:vertical}
 .novo .err{color:var(--danger);font-size:13px;margin:0}
 .novo .row{display:flex;gap:8px;justify-content:flex-end}
 .grp{background:var(--deep);border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:6px;box-shadow:inset 3px 0 0 var(--pc,var(--line))}
@@ -92,6 +93,13 @@ button{font:inherit;color:inherit}
 .dot[data-s="cafe"]{background:var(--peach)}
 .dot[data-s="poltrona"]{background:var(--violet)}
 .empty{color:var(--muted);font-size:14px;padding:4px;margin:0}
+.card-item{background:var(--deep);border-radius:10px;padding:8px 10px;margin-bottom:6px;cursor:pointer;border:1px solid var(--line)}
+.card-item:hover{background:var(--panel)}
+.card-item b{display:block;font-weight:600;font-size:14px;margin-bottom:4px}
+.card-item .meta{display:flex;gap:8px;font-size:11px;color:var(--muted);align-items:center}
+.card-item .etapa{font-size:10px;background:var(--panel2);color:var(--mint);padding:2px 6px;border-radius:4px}
+.card-item .etapa[data-e="novo"]{background:#3a2d64;color:var(--violet)}
+.card-item .etapa[data-e="bloqueado"]{background:#4a1c2a;color:var(--danger)}
 
 /* ---- palco ---- */
 .stage{position:relative;min-height:0;background:#4f8a3e;overflow:hidden}
@@ -215,13 +223,25 @@ canvas{display:block;width:100%;height:100%;image-rendering:pixelated;cursor:poi
   </header>
 
   <aside class="side" aria-label="Projetos e devs">
-    <div class="side-h"><input class="search" id="busca" type="search" placeholder="Buscar dev ou projeto" autocomplete="off"><button class="btn" id="novo" type="button">+ Dev</button></div>
+    <div class="side-h"><input class="search" id="busca" type="search" placeholder="Buscar dev ou projeto" autocomplete="off"><button class="btn" id="novo" type="button">+ Dev</button><button class="btn ghost" id="novoCard" type="button">+ Card</button></div>
     <form class="novo" id="fNovo" hidden>
       <label for="pasta">Pasta do projeto onde o novo dev vai trabalhar</label>
       <input id="pasta" list="pastas" placeholder="C:\Users\voce\Desktop\vivacare" autocomplete="off">
       <datalist id="pastas"></datalist>
       <p class="err" id="novoErr" hidden></p>
       <div class="row"><button class="btn ghost" type="button" id="novoX">Cancelar</button><button class="btn" type="submit">Contratar</button></div>
+    </form>
+    <form class="novo" id="fCard" hidden>
+      <label for="cardTitulo">Título do card</label>
+      <input id="cardTitulo" placeholder="Corrigir bug do login" autocomplete="off">
+      <label for="cardObjetivo">Objetivo</label>
+      <textarea id="cardObjetivo" rows="3" placeholder="O que este card deve resolver..."></textarea>
+      <label for="cardCriterios">Critérios de aceite (um por linha)</label>
+      <textarea id="cardCriterios" rows="3" placeholder="- Login funciona com email válido&#10;- Mensagem de erro clara para senha incorreta"></textarea>
+      <label for="cardPasta">Pasta do projeto</label>
+      <input id="cardPasta" list="pastas" placeholder="C:\Users\voce\Desktop\vivacare" autocomplete="off">
+      <p class="err" id="cardErr" hidden></p>
+      <div class="row"><button class="btn ghost" type="button" id="cardX">Cancelar</button><button class="btn" type="submit">Criar</button></div>
     </form>
     <div id="lista"></div>
   </aside>
@@ -902,6 +922,7 @@ function renderAll(time){
 /* ---------- textos e ícones ---------- */
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const basename=p=>(p?String(p).split(/[\\/]/).pop():'');
 const PCORES=['#ff9f6e','#5bc0ff','#7ff0c4','#c48bff','#ffd84d','#ff7aa8'];
 function corProjeto(p){let h=0;for(const c of String(p))h=(h*31+c.charCodeAt(0))>>>0;return PCORES[h%PCORES.length];}
 function icone(t){t=String(t||'');
@@ -967,6 +988,18 @@ function renderSide(){
   let html='';
   if(!agents.length)html+=`<p class="empty">${LOCAL?'Nenhum dev ainda. Clique em <b>+ Dev</b> para contratar um aqui na página, ou abra o <code>claude</code> num terminal.':'Carregando…'}</p>`;
   grupos.forEach((g,p)=>{html+=`<div class="grp" style="--pc:${corProjeto(p)}"><div class="grp-h"><b>${esc(p)}</b><span class="n">${g.lista.length}</span></div><div class="grp-p">${esc(g.dir||'')}</div>${g.lista.map(linhaDev).join('')}</div>`;});
+
+  // Cards
+  const cards=(EST.cards||[]).filter(c=>!f||c.titulo.toLowerCase().includes(f)||c.etapa.toLowerCase().includes(f));
+  if(cards.length){
+    html+=`<div class="grp" style="--pc:#ffd84d"><div class="grp-h"><b>Cards</b><span class="n">${cards.length}</span></div>`;
+    cards.forEach(c=>{
+      const etapaLabel={'novo':'Novo','po':'PO','dev':'Dev','revisor':'Revisor','qa':'QA','seguranca':'Segurança','documentador':'Documentador','pronto_para_deploy':'Pronto para deploy','bloqueado':'Bloqueado'}[c.etapa]||c.etapa;
+      html+=`<div class="card-item" data-card="${esc(c.id)}"><b>${esc(c.titulo)}</b><div class="meta"><span class="etapa" data-e="${esc(c.etapa)}">${esc(etapaLabel)}</span><span>${esc(basename(c.pasta||''))}</span></div></div>`;
+    });
+    html+='</div>';
+  }
+
   const tf=techs.filter(t=>!f||(t.nome+' '+t.curto).toLowerCase().includes(f));
   if(tf.length)html+=`<div class="grp" style="--pc:#c48bff"><div class="grp-h"><b>Técnicos do prédio</b><span class="n">${tf.length}</span></div>`+tf.map(t=>`<button class="dev" type="button" data-tec="${t.id}" aria-pressed="${t===sel}"><img src="${avatar(t.look)}" alt=""><span style="min-width:0"><b>${esc(t.nome)}</b><span class="act">${esc(techStatus(t))} · ${esc(t.curto)}</span></span><span class="st"><span class="dot" data-s="${t.state==='poltrona'?'poltrona':t.state==='visitando'?'trabalhando':''}"></span></span></button>`).join('')+'</div>';
   if($('lista').innerHTML!==html)$('lista').innerHTML=html;
@@ -1082,7 +1115,7 @@ $('cParar').onclick=()=>sel&&api.parar(sel.id);
 $('cDisp').onclick=()=>{if(sel){api.dispensar(sel.id);fecharChat();}};
 
 /* ---------- contratar dev, modo livre, som ---------- */
-$('novo').onclick=()=>{$('fNovo').hidden=!$('fNovo').hidden;$('novoErr').hidden=true;if(!$('fNovo').hidden)$('pasta').focus();
+$('novo').onclick=()=>{$('fCard').hidden=true;$('fNovo').hidden=!$('fNovo').hidden;$('novoErr').hidden=true;if(!$('fNovo').hidden)$('pasta').focus();
   $('pastas').innerHTML=(EST.pastas||[]).map(p=>`<option value="${esc(p)}">`).join('');};
 $('novoX').onclick=()=>{$('fNovo').hidden=true;};
 $('fNovo').addEventListener('submit',async e=>{e.preventDefault();
@@ -1090,6 +1123,15 @@ $('fNovo').addEventListener('submit',async e=>{e.preventDefault();
   if(r&&r.erro){$('novoErr').hidden=false;$('novoErr').textContent=r.erro;return;}
   $('fNovo').hidden=true;$('pasta').value='';
   setTimeout(()=>{const a=agents.find(g=>g.id===r.id);if(a)abrir(a);},400);
+});
+$('novoCard').onclick=()=>{$('fNovo').hidden=true;$('fCard').hidden=!$('fCard').hidden;$('cardErr').hidden=true;if(!$('fCard').hidden){$('cardTitulo').focus();$('cardPasta').value='C:\\Users\\voce\\Desktop\\vivacare';}
+  $('pastas').innerHTML=(EST.pastas||[]).map(p=>`<option value="${esc(p)}">`).join('');};
+$('cardX').onclick=()=>{$('fCard').hidden=true;};
+$('fCard').addEventListener('submit',async e=>{e.preventDefault();
+  const criterios = $('cardCriterios').value.trim().split('\n').map(l=>l.replace(/^[-*]\s*/,'').trim()).filter(Boolean);
+  const r=await api.criarCard({titulo:$('cardTitulo').value,objetivo:$('cardObjetivo').value,criterios,pasta:$('cardPasta').value});
+  if(r&&r.erro){$('cardErr').hidden=false;$('cardErr').textContent=r.erro;return;}
+  $('fCard').hidden=true;$('cardTitulo').value='';$('cardObjetivo').value='';$('cardCriterios').value='';
 });
 $('livre').onclick=()=>api.livre(!EST.modoLivre);
 $('som').onclick=e=>{sound=!sound;e.currentTarget.setAttribute('aria-pressed',String(sound));e.currentTarget.textContent=sound?'Som ligado':'Som';if(sound)beep();};
@@ -1113,6 +1155,7 @@ let api=LOCAL?{
   dispensar:id=>post(`/agentes/${encodeURIComponent(id)}/dispensar`),
   criar:pasta=>post('/agentes',{pasta}),
   livre:ligado=>post('/modo-livre',{ligado}),
+  criarCard:dados=>post('/api/cards',dados),
 }:null;
 function conectar(){
   const es=new EventSource('/eventos'),m=$('modo');
@@ -1191,6 +1234,7 @@ function criarSimulador(){
     async dispensar(id){const i=S.sessoes.findIndex(x=>x.id===id);if(i>=0){reg(S.sessoes[i],'Foi embora.');S.sessoes.splice(i,1);}tick(0);},
     async criar(pasta){pasta=String(pasta||'').trim();if(!pasta)return {erro:'Diga a pasta do projeto.'};const s=nova(pasta,true);if(!s)return {erro:'O escritório está lotado (6 devs).'};tick(0);return {id:s.id};},
     async livre(l){S.modoLivre=!!l;if(l)S.sessoes.forEach(s=>{if(s.pendente)api.permissao(s.id,true);});tick(0);},
+    async criarCard(){return {erro:'Cards só funcionam com o servidor rodando (node server.js).'};},
   };
   function tick(dt){S.sessoes.forEach(s=>{passo(s,dt);vidaTerminal(s,dt);});
     const v=Date.now()/1000;if(S.tela.cinco.reset<v)S.tela.cinco={pct:2,reset:v+5*3600};
