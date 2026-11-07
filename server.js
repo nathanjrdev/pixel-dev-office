@@ -18,6 +18,8 @@ const WIN = process.platform === 'win32';
 const MAX_MESAS = 6;
 const FILEIRAS = [[0, 1, 2], [3, 4, 5]];
 const ARQ_AGENTES = path.join(__dirname, 'agentes.json');
+const DIR_CARTOES = path.join(__dirname, 'cartoes');
+const DIR_MODELOS = path.join(__dirname, 'modelos');
 
 const sessoes = new Map();   // id -> sessão (terminal ou da página)
 const apelidos = new Map();  // session_id do Claude -> id da sessão da página
@@ -26,6 +28,8 @@ const atividade = [];
 let modoLivre = false;
 const tela = { cinco: null, semana: null, atualizado: null };
 const pastasVistas = new Set();
+const cards = new Map(); // id -> card
+let proximoCardId = 1;
 
 function hoje() { const d = new Date(); return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate(); }
 const gastoEncerrado = { dia: hoje(), entrada: 0, saida: 0, cacheLeitura: 0, cacheEscrita: 0 };
@@ -434,6 +438,156 @@ function carregarAgentes() {
   }
 }
 
+// ---------- cards e esteira ----------
+function criarCard(dados) {
+  const { titulo, objetivo, criterios, pasta } = dados;
+  if (!titulo || !titulo.trim()) return { erro: 'Título é obrigatório.' };
+  if (!objetivo || !objetivo.trim()) return { erro: 'Objetivo é obrigatório.' };
+  if (!pasta || !pasta.trim()) return { erro: 'Pasta do projeto é obrigatória.' };
+
+  const pastaResolvida = path.resolve(String(pasta).trim().replace(/^"(.*)"$/, '$1'));
+  try {
+    const st = fs.statSync(pastaResolvida);
+    if (!st.isDirectory()) return { erro: 'A pasta informada não é um diretório.' };
+  } catch {
+    return { erro: `Pasta não encontrada: ${pasta}` };
+  }
+
+  const id = String(proximoCardId++).padStart(3, '0');
+  const dirCard = path.join(DIR_CARTOES, id);
+
+  try {
+    fs.mkdirSync(DIR_CARTOES, { recursive: true });
+    fs.mkdirSync(dirCard, { recursive: true });
+    fs.mkdirSync(path.join(dirCard, 'pareceres'), { recursive: true });
+
+    // Ler modelos
+    const modeloCard = fs.readFileSync(path.join(DIR_MODELOS, 'CARD.md'), 'utf8');
+    const modeloHandoff = fs.readFileSync(path.join(DIR_MODELOS, 'HANDOFF.md'), 'utf8');
+
+    // em String.replace, "$" no texto de troca tem significado especial (ex.: $1, $&);
+    // como título/objetivo/pasta/critérios vêm do usuário, escapamos antes de usar como substituição
+    const semEspecial = s => String(s).replace(/\$/g, '$$$$');
+
+    // Gerar CARD.md
+    const criteriosTexto = Array.isArray(criterios)
+      ? criterios.map(c => `- [ ] ${c}`).join('\n')
+      : '- [ ] (critério a definir)';
+
+    const cardTexto = modeloCard
+      .replace('{id}', id)
+      .replace('{título}', semEspecial(titulo))
+      .replace('{caminho}', semEspecial(pastaResolvida))
+      .replace('{Descreva o objetivo do card em 1-3 parágrafos}', semEspecial(objetivo))
+      .replace(/- \[ \] \{critério \d+\}\n?/g, '')
+      .replace('## Critérios de aceite\n', `## Critérios de aceite\n\n${semEspecial(criteriosTexto)}\n`)
+      .replace('{O que este card NÃO vai fazer}', '(a definir)');
+
+    fs.writeFileSync(path.join(dirCard, 'CARD.md'), cardTexto);
+
+    // Gerar HANDOFF.md vazio
+    const handoffTexto = modeloHandoff
+      .replace('{id}', id)
+      .replace('{data/hora}', new Date().toISOString())
+      .replace('{agente/modelo}', 'criação manual')
+      .replace('{etapa}', 'novo')
+      .replace('{O que este card deve realizar}', semEspecial(objetivo))
+      .replace(/\{[^}]+\}/g, '(a preencher)');
+
+    fs.writeFileSync(path.join(dirCard, 'HANDOFF.md'), handoffTexto);
+
+    // Gerar estado.json
+    const estado = {
+      id,
+      etapa: 'novo',
+      tentativas: {},
+      runner: null,
+      criado: new Date().toISOString(),
+      atualizado: new Date().toISOString(),
+      bloqueado: false
+    };
+
+    fs.writeFileSync(path.join(dirCard, 'estado.json'), JSON.stringify(estado, null, 2));
+
+    // Gerar log.md
+    const logTexto = `# Log — Card ${id}\n\n**${new Date().toISOString()}** — Card criado: ${titulo}\n`;
+    fs.writeFileSync(path.join(dirCard, 'log.md'), logTexto);
+
+    // Adicionar ao Map
+    const card = {
+      id,
+      titulo,
+      objetivo,
+      pasta: pastaResolvida,
+      etapa: 'novo',
+      criado: estado.criado,
+      atualizado: estado.atualizado,
+      bloqueado: false
+    };
+
+    cards.set(id, card);
+
+    console.log(`[${hora()}] Card ${id} criado: ${titulo}`);
+    return { id, card };
+
+  } catch (err) {
+    return { erro: `Erro ao criar card: ${err.message}` };
+  }
+}
+
+function listarCards() {
+  // Carregar cards da pasta cartoes/ caso ainda não estejam no Map
+  if (!fs.existsSync(DIR_CARTOES)) return [];
+
+  const dirs = fs.readdirSync(DIR_CARTOES).filter(d => {
+    const full = path.join(DIR_CARTOES, d);
+    return fs.statSync(full).isDirectory() && /^\d{3}$/.test(d);
+  });
+
+  for (const id of dirs) {
+    if (cards.has(id)) continue;
+
+    try {
+      const estadoPath = path.join(DIR_CARTOES, id, 'estado.json');
+      const cardPath = path.join(DIR_CARTOES, id, 'CARD.md');
+
+      if (!fs.existsSync(estadoPath) || !fs.existsSync(cardPath)) continue;
+
+      const estado = JSON.parse(fs.readFileSync(estadoPath, 'utf8'));
+      const cardTexto = fs.readFileSync(cardPath, 'utf8');
+
+      // Extrair título do CARD.md
+      const tituloMatch = cardTexto.match(/^# Card \d+: (.+)$/m);
+      const objetivoMatch = cardTexto.match(/## Objetivo\n\n(.+?)(\n\n##|\n*$)/s);
+      const pastaMatch = cardTexto.match(/\*\*Pasta do projeto:\*\* (.+)$/m);
+
+      cards.set(id, {
+        id,
+        titulo: tituloMatch ? tituloMatch[1] : `Card ${id}`,
+        objetivo: objetivoMatch ? objetivoMatch[1].trim() : '',
+        pasta: pastaMatch ? pastaMatch[1].trim() : '',
+        etapa: estado.etapa || 'novo',
+        criado: estado.criado,
+        atualizado: estado.atualizado,
+        bloqueado: estado.bloqueado || false
+      });
+    } catch (err) {
+      console.log(`Erro ao carregar card ${id}:`, err.message);
+    }
+  }
+
+  return [...cards.values()].sort((a, b) => b.criado.localeCompare(a.criado));
+}
+// evita reaproveitar um id já usado (e sobrescrever o card) depois de reiniciar o servidor
+function inicializarProximoCardId() {
+  if (!fs.existsSync(DIR_CARTOES)) return;
+  let maior = 0;
+  for (const d of fs.readdirSync(DIR_CARTOES)) {
+    if (/^\d{3}$/.test(d)) maior = Math.max(maior, Number(d));
+  }
+  proximoCardId = maior + 1;
+}
+
 // ---------- estado para a tela ----------
 function estado() {
   zerarSeVirouODia();
@@ -448,7 +602,7 @@ function estado() {
       rodando: s.rodando, pendente: s.pendente ? s.pendente.id : null, inicio: s.inicio,
     };
   });
-  return { sessoes: lista, tela, gasto, modoLivre, atividade: atividade.slice(-40), pastas: [...pastasVistas].slice(-12) };
+  return { sessoes: lista, tela, gasto, modoLivre, atividade: atividade.slice(-40), pastas: [...pastasVistas].slice(-12), cards: listarCards() };
 }
 let agendado = null;
 function enviarParaTelas() {
@@ -480,6 +634,9 @@ const servidor = http.createServer((req, res) => {
     req.on('close', () => telas.delete(res));
     return;
   }
+  if (req.method === 'GET' && url === '/api/cards') {
+    return ok(res, { cards: listarCards() });
+  }
   if (req.method !== 'POST') { res.writeHead(404); return res.end('Não encontrado'); }
 
   if (url === '/hook') return lerCorpo(req, j => {
@@ -496,6 +653,11 @@ const servidor = http.createServer((req, res) => {
   });
   if (url === '/agentes') return lerCorpo(req, j => {
     const r = criarAgente(j.pasta);
+    if (r.erro) return falha(res, r.erro);
+    enviarParaTelas(); ok(res, r);
+  });
+  if (url === '/api/cards') return lerCorpo(req, j => {
+    const r = criarCard(j);
     if (r.erro) return falha(res, r.erro);
     enviarParaTelas(); ok(res, r);
   });
@@ -531,6 +693,7 @@ setInterval(() => {
 }, 3000);
 
 carregarAgentes();
+inicializarProximoCardId();
 servidor.listen(PORTA, '127.0.0.1', () => {
   console.log(`\n  Escritório Pixel aberto em http://localhost:${PORTA}\n  Deixe esta janela aberta. Ctrl+C para fechar.\n`);
 });
